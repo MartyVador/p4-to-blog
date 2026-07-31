@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  @font-face { font-family: 'system-mono'; src: local('SF Mono'); }
+  body { margin: 0; background: #f5f5f7; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 4px; }
+</style>
+</helmet>
+<div style="display:flex;flex-direction:column;height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:{{ theme.textPrimary }};background:{{ theme.pageBg }};overflow:hidden">
+
+  <div style="display:flex;align-items:center;gap:12px;padding:14px 20px;background:#18181b;color:#fff;flex-shrink:0">
+    <div style="width:28px;height:28px;border-radius:6px;background:#f59e0b;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;color:#18181b;font-family:ui-monospace,monospace">P4</div>
+    <div style="font-weight:600;font-size:15px;letter-spacing:-0.2px">Changelist &rarr; Blog</div>
+    <div style="font-size:12px;color:#a1a1aa;border-left:1px solid #3f3f46;padding-left:12px;margin-left:2px">Perforce changelist history &amp; content recommendations</div>
+    <div style="flex:1"></div>
+    <button onclick="{{ toggleDarkMode }}" style="border:1px solid #3f3f46;background:#27272a;color:#e4e4e7;font-size:11px;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer;margin-right:6px">{{ darkModeLabel }}</button>
+    <button onclick="{{ openConnectionModal }}" style="border:1px solid #3f3f46;background:#27272a;color:#e4e4e7;font-size:11px;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer;margin-right:6px;display:flex;align-items:center;gap:6px">
+      <span style="width:7px;height:7px;border-radius:50%;background:{{ connectionDotColor }};display:inline-block"></span>
+      Server settings
+    </button>
+    <div style="font-size:12px;color:#a1a1aa;font-family:ui-monospace,monospace">{{ serverAddress }}</div>
+  </div>
+
+  <div style="display:flex;flex:1;min-height:0">
+
+    <div style="width:420px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid {{ theme.border }};background:{{ theme.panelBg }};min-height:0">
+
+      <div style="padding:14px 16px;border-bottom:1px solid {{ theme.borderSoft }};display:flex;flex-direction:column;gap:8px">
+        <input placeholder="Search description, author, CL#..." value="{{ search }}" oninput="{{ onSearch }}" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid {{ theme.border }};border-radius:6px;font-size:13px;outline:none;background:{{ theme.inputBg }};color:{{ theme.textPrimary }}" />
+        <div style="display:flex;gap:6px">
+          <select value="{{ depotFilter }}" onchange="{{ onDepotFilter }}" style="flex:1;font-size:12px;padding:6px 6px;border:1px solid {{ theme.border }};border-radius:6px;background:{{ theme.inputBg }};color:{{ theme.textSecondary }}">
+            <option value="all">All depots</option>
+            <sc-for list="{{ depots }}" as="d" hint-placeholder-count="4">
+              <option value="{{ d }}">{{ d }}</option>
+            </sc-for>
+          </select>
+          <select value="{{ tagFilter }}" onchange="{{ onTagFilter }}" style="flex:1;font-size:12px;padding:6px 6px;border:1px solid {{ theme.border }};border-radius:6px;background:{{ theme.inputBg }};color:{{ theme.textSecondary }}">
+            <option value="all">All tags</option>
+            <sc-for list="{{ tags }}" as="t" hint-placeholder-count="6">
+              <option value="{{ t }}">{{ t }}</option>
+            </sc-for>
+          </select>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:{{ theme.textSecondary }};padding-top:2px">
+          <span>{{ resultCountLabel }}</span>
+          <button onclick="{{ clearSelection }}" style="border:none;background:none;color:{{ theme.accent }};font-size:11px;cursor:pointer;font-weight:600;padding:0">clear selection</button>
+        </div>
+      </div>
+
+      <div style="flex:1;overflow-y:auto;min-height:0">
+        <sc-for list="{{ filteredChangelists }}" as="cl" hint-placeholder-count="6">
+          <div style="display:flex;gap:10px;padding:11px 16px;border-bottom:1px solid {{ theme.borderSoft }};cursor:pointer;background:{{ cl.rowBg }}" onclick="{{ cl.onOpenDetail }}">
+            <div onclick="{{ cl.onToggleSelectStop }}" style="padding-top:2px">
+              <input type="checkbox" checked="{{ cl.isSelected }}" onchange="{{ cl.onToggleSelect }}" style="width:15px;height:15px;cursor:pointer;accent-color:{{ theme.accent }}" />
+            </div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:baseline;gap:8px">
+                <span style="font-family:ui-monospace,monospace;font-size:12px;color:{{ theme.textSecondary }};font-weight:600">CL {{ cl.cl }}</span>
+                <span style="font-size:10px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;padding:1px 6px;border-radius:4px;background:{{ cl.tagBg }};color:{{ cl.tagColor }}">{{ cl.tag }}</span>
+                <span style="flex:1"></span>
+                <span style="font-size:11px;color:{{ theme.textMuted }}">{{ cl.date }}</span>
+              </div>
+              <div style="font-size:13px;font-weight:600;color:{{ theme.textPrimary }};margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ cl.summary }}</div>
+              <div style="font-size:11px;color:{{ theme.textSecondary }};margin-top:2px;font-family:ui-monospace,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ cl.depot }} &middot; {{ cl.author }} &middot; {{ cl.fileCountLabel }} &middot; <span style="color:#16a34a">+{{ cl.linesAdded }}</span> <span style="color:#dc2626">-{{ cl.linesRemoved }}</span></div>
+            </div>
+          </div>
+        </sc-for>
+        <sc-if value="{{ noResults }}" hint-placeholder-val="{{ false }}">
+          <div style="padding:40px 20px;text-align:center;color:{{ theme.textMuted }};font-size:13px">No changelists match your filters.</div>
+        </sc-if>
+      </div>
+    </div>
+
+    <div style="flex:1;display:flex;flex-direction:column;min-height:0;background:{{ theme.pageBg }}">
+
+      <div style="display:flex;align-items:center;gap:14px;padding:14px 22px;background:{{ theme.panelBg }};border-bottom:1px solid {{ theme.border }};flex-shrink:0">
+        <div style="font-size:13px;font-weight:600">
+          <span style="color:{{ theme.accent }}">{{ selectedCount }}</span> changelist{{ selectedPlural }} selected
+        </div>
+        <div style="flex:1"></div>
+        <sc-if value="{{ hasPost }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;background:{{ theme.toggleTrackBg }};border-radius:7px;padding:2px;gap:2px">
+            <button onclick="{{ setViewRendered }}" style="border:none;padding:6px 12px;font-size:12px;font-weight:600;border-radius:5px;cursor:pointer;background:{{ viewBgRendered }};color:{{ viewColorRendered }}">Readable</button>
+            <button onclick="{{ setViewMarkdown }}" style="border:none;padding:6px 12px;font-size:12px;font-weight:600;border-radius:5px;cursor:pointer;background:{{ viewBgMarkdown }};color:{{ viewColorMarkdown }}">Markdown</button>
+          </div>
+        </sc-if>
+        <button onclick="{{ onGenerate }}" disabled="{{ generateDisabled }}" style="border:none;padding:8px 16px;font-size:13px;font-weight:700;border-radius:7px;cursor:pointer;background:{{ generateBtnBg }};color:#fff;opacity:{{ generateBtnOpacity }}">Generate recommendations</button>
+      </div>
+
+      <div style="flex:1;overflow-y:auto;padding:22px;min-height:0">
+
+        <sc-if value="{{ showEmptyState }}" hint-placeholder-val="{{ true }}">
+          <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:{{ theme.textMuted }};gap:8px;text-align:center">
+            <div style="font-size:34px">&#8594;</div>
+            <div style="font-size:14px;font-weight:600;color:{{ theme.textSecondary }}">Select changelists on the left, then generate</div>
+            <div style="font-size:12px;max-width:320px">Each selected changelist becomes one candidate blog post idea, tailored to what actually changed.</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ showRendered }}" hint-placeholder-val="{{ false }}">
+          <div style="width:100%;max-width:760px;margin:0 auto;background:{{ theme.cardBg }};border:1px solid {{ theme.border }};border-radius:10px;padding:clamp(16px,4vw,36px);box-sizing:border-box">
+            <div style="font-size:clamp(17px,3vw,22px);font-weight:800;color:{{ theme.textPrimary }};line-height:1.3;margin-bottom:14px">{{ postTitle }}</div>
+            <div style="font-size:14px;color:{{ theme.textSecondary }};line-height:1.7;margin-bottom:20px">{{ postIntro }}</div>
+            <sc-for list="{{ recs }}" as="r" hint-placeholder-count="0">
+              <div style="margin-bottom:22px">
+                <div style="font-size:17px;font-weight:700;color:{{ theme.textPrimary }};margin-bottom:4px">{{ r.title }}</div>
+                <div style="font-size:11.5px;color:{{ theme.textMuted }};font-style:italic;margin-bottom:8px">{{ r.tag }} &mdash; CL {{ r.cl }}, {{ r.depot }}</div>
+                <div style="font-size:13.5px;color:{{ theme.textSecondary }};line-height:1.7;margin-bottom:8px">{{ r.angle }}</div>
+                <div style="display:flex;flex-direction:column;gap:4px">
+                  <sc-for list="{{ r.keyPoints }}" as="kp" hint-placeholder-count="3">
+                    <div style="font-size:13.5px;color:{{ theme.textSecondary }};display:flex;gap:8px;line-height:1.6"><span style="color:{{ theme.accent }}">&bull;</span>{{ kp }}</div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-for>
+            <div style="font-size:14px;color:{{ theme.textSecondary }};line-height:1.7;border-top:1px solid {{ theme.border }};padding-top:16px">{{ postConclusion }}</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ showMarkdown }}" hint-placeholder-val="{{ false }}">
+          <div style="width:100%;max-width:760px;margin:0 auto;background:{{ theme.cardBg }};border:1px solid {{ theme.border }};border-radius:10px;padding:clamp(14px,3.5vw,28px) clamp(14px,4vw,32px);box-sizing:border-box;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:13.5px;line-height:1.75;color:{{ theme.textPrimary }}">{{ postMarkdown }}</div>
+        </sc-if>
+
+      </div>
+    </div>
+  </div>
+
+  <sc-if value="{{ connectionModalOpen }}" hint-placeholder-val="{{ false }}">
+    <div onclick="{{ closeConnectionModal }}" style="position:fixed;inset:0;background:{{ theme.overlayBg }};display:flex;align-items:center;justify-content:center;z-index:60">
+      <div onclick="{{ stopProp }}" style="width:380px;max-width:90vw;background:{{ theme.panelBg }};color:{{ theme.textPrimary }};border-radius:12px;padding:24px;box-shadow:0 12px 40px rgba(0,0,0,0.3)">
+        <div style="font-size:15px;font-weight:700;margin-bottom:4px">Perforce server connection</div>
+        <div style="font-size:12px;color:{{ theme.textSecondary }};margin-bottom:18px">Used to pull changelist history. Stored locally only.</div>
+
+        <div style="font-size:11px;font-weight:600;color:{{ theme.textSecondary }};text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px">Server address (P4PORT)</div>
+        <input value="{{ formServerAddress }}" oninput="{{ onServerAddressChange }}" placeholder="ssl:perforce.company.com:1666" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid {{ theme.border }};border-radius:6px;font-size:13px;outline:none;background:{{ theme.inputBg }};color:{{ theme.textPrimary }};margin-bottom:12px;font-family:ui-monospace,monospace" />
+
+        <div style="font-size:11px;font-weight:600;color:{{ theme.textSecondary }};text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px">Account (P4USER)</div>
+        <input value="{{ formUsername }}" oninput="{{ onUsernameChange }}" placeholder="jdoe" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid {{ theme.border }};border-radius:6px;font-size:13px;outline:none;background:{{ theme.inputBg }};color:{{ theme.textPrimary }};margin-bottom:12px" />
+
+        <div style="font-size:11px;font-weight:600;color:{{ theme.textSecondary }};text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px">Password / ticket</div>
+        <input type="password" value="{{ formPassword }}" oninput="{{ onPasswordChange }}" placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid {{ theme.border }};border-radius:6px;font-size:13px;outline:none;background:{{ theme.inputBg }};color:{{ theme.textPrimary }};margin-bottom:8px" />
+
+        <sc-if value="{{ connectionError }}" hint-placeholder-val="{{ false }}">
+          <div style="font-size:12px;color:#dc2626;margin-bottom:8px">{{ connectionError }}</div>
+        </sc-if>
+        <sc-if value="{{ connectionStatusLabel }}" hint-placeholder-val="{{ false }}">
+          <div style="font-size:12px;color:{{ connectionDotColor }};margin-bottom:8px;display:flex;align-items:center;gap:6px">
+            <span style="width:7px;height:7px;border-radius:50%;background:{{ connectionDotColor }};display:inline-block"></span>
+            {{ connectionStatusLabel }}
+          </div>
+        </sc-if>
+
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button onclick="{{ closeConnectionModal }}" style="flex:1;border:1px solid {{ theme.border }};background:transparent;color:{{ theme.textSecondary }};font-size:13px;font-weight:600;padding:9px;border-radius:7px;cursor:pointer">Cancel</button>
+          <button onclick="{{ onTestConnection }}" style="flex:1;border:none;background:{{ theme.accent }};color:#fff;font-size:13px;font-weight:700;padding:9px;border-radius:7px;cursor:pointer">Connect</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ detailOpen }}" hint-placeholder-val="{{ false }}">
+    <div onclick="{{ closeDetail }}" style="position:fixed;inset:0;background:{{ theme.overlayBg }};display:flex;justify-content:flex-end;z-index:50">
+      <div onclick="{{ stopProp }}" style="width:460px;height:100%;background:{{ theme.panelBg }};color:{{ theme.textPrimary }};box-shadow:-8px 0 24px rgba(0,0,0,0.25);overflow-y:auto;padding:24px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
+          <div>
+            <div style="font-family:ui-monospace,monospace;font-size:13px;color:{{ theme.textSecondary }};font-weight:600">CL {{ detail.cl }}</div>
+            <div style="font-size:17px;font-weight:700;margin-top:4px">{{ detail.summary }}</div>
+          </div>
+          <button onclick="{{ closeDetail }}" style="border:none;background:{{ theme.toggleTrackBg }};color:{{ theme.textSecondary }};width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:15px">&times;</button>
+        </div>
+        <div style="display:flex;gap:14px;font-size:12px;color:{{ theme.textSecondary }};margin-bottom:16px;flex-wrap:wrap">
+          <span>{{ detail.author }}</span><span>&middot;</span><span>{{ detail.date }}</span><span>&middot;</span>
+          <span style="font-family:ui-monospace,monospace">{{ detail.depot }}</span>
+        </div>
+        <div style="font-size:13px;color:{{ theme.textSecondary }};line-height:1.6;background:{{ theme.inputBg }};border:1px solid {{ theme.borderSoft }};border-radius:8px;padding:12px;margin-bottom:18px;white-space:pre-wrap">{{ detail.description }}</div>
+        <div style="display:flex;gap:16px;margin-bottom:14px">
+          <div style="font-size:13px;color:#16a34a;font-weight:700">+{{ detail.linesAdded }}</div>
+          <div style="font-size:13px;color:#dc2626;font-weight:700">-{{ detail.linesRemoved }}</div>
+          <div style="font-size:13px;color:{{ theme.textSecondary }}">{{ detail.fileCountLabel }}</div>
+        </div>
+        <div style="font-size:11px;font-weight:700;color:{{ theme.textSecondary }};text-transform:uppercase;letter-spacing:0.3px;margin-bottom:8px">Files</div>
+        <div style="display:flex;flex-direction:column;gap:1px;border:1px solid {{ theme.borderSoft }};border-radius:8px;overflow:hidden">
+          <sc-for list="{{ detail.files }}" as="f" hint-placeholder-count="4">
+            <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;font-size:11.5px;font-family:ui-monospace,monospace;background:{{ theme.panelBg }};border-bottom:1px solid {{ theme.borderSoft }}">
+              <span style="width:14px;font-weight:700;color:{{ f.actionColor }}">{{ f.actionLetter }}</span>
+              <span style="flex:1;color:{{ theme.textSecondary }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ f.path }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <button onclick="{{ detail.onSelectFromDetail }}" style="width:100%;margin-top:20px;border:none;background:{{ theme.accent }};color:#fff;font-size:13px;font-weight:700;padding:11px;border-radius:8px;cursor:pointer">{{ detail.selectBtnLabel }}</button>
+      </div>
+    </div>
+  </sc-if>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const TAG_COLORS = {
+  Feature: { bg: '#eef2ff', color: '#4338ca' },
+  Bugfix: { bg: '#fef2f2', color: '#b91c1c' },
+  Performance: { bg: '#f0fdf4', color: '#15803d' },
+  Refactor: { bg: '#faf5ff', color: '#7e22ce' },
+  Tooling: { bg: '#fff7ed', color: '#c2410c' },
+  'UI/UX': { bg: '#fdf2f8', color: '#be185d' },
+  Security: { bg: '#f0fdfa', color: '#0f766e' }
+};
+
+const TEMPLATES = {
+  Feature: (s) => ({
+    title: `Shipping ${s}: what it took under the hood`,
+    altTitle: `Behind the build: ${s}`,
+    angle: `A build-in-public look at why we added this, the design decisions we made, and what it unlocks next.`,
+    keyPoints: ['The problem this feature solves and who asked for it', 'Design/architecture decisions and alternatives we ruled out', 'What shipped in this changelist, concretely', 'What we would build differently next time']
+  }),
+  Bugfix: (s) => ({
+    title: `The bug behind ${s}`,
+    altTitle: `A postmortem: ${s}`,
+    angle: `A war-story writeup: how the bug was found, how it was root-caused, and the fix that landed.`,
+    keyPoints: ['Symptom as first reported vs. the actual root cause', 'The debugging path — dead ends included', 'The fix, and why it is safe long-term', 'Guardrails added to catch a repeat']
+  }),
+  Performance: (s) => ({
+    title: `Optimizing ${s}`,
+    altTitle: `A performance deep dive: ${s}`,
+    angle: `Before/after benchmarks and the profiling approach that found the win.`,
+    keyPoints: ['Baseline numbers and how they were measured', 'Where the time/memory was actually going', 'The optimization and its tradeoffs', 'Resulting numbers and what is next on the list']
+  }),
+  Refactor: (s) => ({
+    title: `Why we refactored ${s}`,
+    altTitle: `Paying down debt: ${s}`,
+    angle: `The tech-debt story: what was getting harder to maintain, and the shape of the fix.`,
+    keyPoints: ['What made the old code painful to work in', 'The new structure and why it scales better', 'How the migration was sequenced safely', 'What got easier immediately after']
+  }),
+  Tooling: (s) => ({
+    title: `Building better internal tools: ${s}`,
+    altTitle: `Tooling notes: ${s}`,
+    angle: `An internal-tooling deep dive useful to other small teams hitting the same workflow friction.`,
+    keyPoints: ['The workflow friction that motivated the tool', 'How it works, with a concrete before/after', 'Adoption — what changed day to day', 'Ideas for where this could go next']
+  }),
+  'UI/UX': (s) => ({
+    title: `Redesigning ${s}`,
+    altTitle: `Design notes: ${s}`,
+    angle: `Design rationale, the constraints we were working under, and any early feedback.`,
+    keyPoints: ['What was wrong with the previous version', 'Options considered and why this one won', 'Details worth calling out (motion, states, edge cases)', 'Feedback so far and what might change']
+  }),
+  Security: (s) => ({
+    title: `Hardening ${s}`,
+    altTitle: `A responsible writeup: ${s}`,
+    angle: `A disclosure-safe writeup of the vulnerability class and the fix, without exposing exploit details.`,
+    keyPoints: ['The class of issue, described generally', 'How it was discovered (audit, report, tooling)', 'The mitigation shipped in this changelist', 'Process changes to prevent recurrence']
+  })
+};
+
+const CHANGELISTS = [
+  { cl: 88213, author: 'j.alvarez', date: '2 days ago', depot: '//game/render', tag: 'Performance', summary: 'GPU particle batching for foliage system', linesAdded: 412, linesRemoved: 96,
+    description: 'Batches foliage particle draw calls per chunk instead of per-instance. Reduces draw calls on the forest biome benchmark from ~4200 to ~380. Adds a fallback path for GPUs without instanced arrays.',
+    files: [ {path:'//game/render/foliage/FoliageBatcher.cpp', action:'add'}, {path:'//game/render/foliage/FoliageRenderer.cpp', action:'edit'}, {path:'//game/render/shaders/foliage_instanced.hlsl', action:'add'}, {path:'//game/render/tests/foliage_bench.cpp', action:'edit'} ] },
+  { cl: 88190, author: 'k.chen', date: '3 days ago', depot: '//tools/build', tag: 'Tooling', summary: 'Incremental asset cook cache keyed by content hash', linesAdded: 588, linesRemoved: 140,
+    description: 'Replaces timestamp-based cook invalidation with content hashing. Full cook time on CI drops from 41 min to 9 min on cache hit. Includes a migration script for existing cache dirs.',
+    files: [ {path:'//tools/build/cook/CacheKey.py', action:'add'}, {path:'//tools/build/cook/CookPipeline.py', action:'edit'}, {path:'//tools/build/cook/migrate_cache.py', action:'add'}, {path:'//tools/build/ci/cook_job.yml', action:'edit'} ] },
+  { cl: 88176, author: 'r.osei', date: '4 days ago', depot: '//game/ui', tag: 'UI/UX', summary: 'Inventory grid drag-and-drop rewrite', linesAdded: 731, linesRemoved: 512,
+    description: 'Replaces the old slot-swap inventory interaction with a proper drag-and-drop with ghost preview and stack-split on modifier key. Fixes long-standing item-duplication edge case.',
+    files: [ {path:'//game/ui/inventory/InventoryGrid.tsx', action:'edit'}, {path:'//game/ui/inventory/DragLayer.tsx', action:'add'}, {path:'//game/ui/inventory/InventorySlot.tsx', action:'edit'}, {path:'//game/ui/inventory/inventory.test.ts', action:'edit'} ] },
+  { cl: 88151, author: 'j.alvarez', date: '5 days ago', depot: '//engine/net', tag: 'Bugfix', summary: 'Fix desync on rollback during high packet loss', linesAdded: 64, linesRemoved: 21,
+    description: 'Rollback netcode was applying inputs from a stale tick when packet loss exceeded 8%, causing visible desync. Root cause was an off-by-one in the input buffer ring index during resync.',
+    files: [ {path:'//engine/net/rollback/InputBuffer.cpp', action:'edit'}, {path:'//engine/net/rollback/RollbackManager.cpp', action:'edit'}, {path:'//engine/net/tests/rollback_desync_test.cpp', action:'add'} ] },
+  { cl: 88132, author: 'm.dubois', date: '6 days ago', depot: '//game/main', tag: 'Feature', summary: 'Photo mode with depth-of-field and time freeze', linesAdded: 1204, linesRemoved: 58,
+    description: 'New photo mode: pauses simulation, exposes free camera, DoF and vignette controls, and an export-to-PNG path with metadata stripped. Gated behind a settings flag for now.',
+    files: [ {path:'//game/main/photomode/PhotoModeController.cpp', action:'add'}, {path:'//game/main/photomode/PhotoModeUI.tsx', action:'add'}, {path:'//game/render/post/DepthOfField.cpp', action:'edit'}, {path:'//game/main/capture/PngExporter.cpp', action:'add'} ] },
+  { cl: 88104, author: 'k.chen', date: '1 week ago', depot: '//game/audio', tag: 'Refactor', summary: 'Collapse three overlapping audio mixers into one bus graph', linesAdded: 340, linesRemoved: 890,
+    description: 'The music, SFX, and voice systems each grew their own ad-hoc mixing logic over two years. This collapses them into a single bus graph with named buses, cutting audio-related bug reports.',
+    files: [ {path:'//game/audio/mixer/BusGraph.cpp', action:'add'}, {path:'//game/audio/music/MusicMixer.cpp', action:'delete'}, {path:'//game/audio/sfx/SfxMixer.cpp', action:'delete'}, {path:'//game/audio/voice/VoiceMixer.cpp', action:'delete'} ] },
+  { cl: 88090, author: 'r.osei', date: '1 week ago', depot: '//game/ui', tag: 'Feature', summary: 'Colorblind-safe accessibility palette toggle', linesAdded: 288, linesRemoved: 44,
+    description: 'Adds three colorblind-safe palettes (protanopia, deuteranopia, tritanopia) selectable in settings, remapping HUD and minimap colors at draw time via a lookup table.',
+    files: [ {path:'//game/ui/accessibility/PaletteLUT.cpp', action:'add'}, {path:'//game/ui/hud/HudRenderer.cpp', action:'edit'}, {path:'//game/ui/settings/AccessibilityPanel.tsx', action:'add'} ] },
+  { cl: 88065, author: 'm.dubois', date: '9 days ago', depot: '//engine/render', tag: 'Performance', summary: 'Async shader compilation to remove first-frame hitches', linesAdded: 195, linesRemoved: 62,
+    description: 'Shaders now compile on a worker pool at level load instead of on first use, removing the 200-400ms hitch players hit when a new material is seen for the first time in an area.',
+    files: [ {path:'//engine/render/shaders/ShaderCompilePool.cpp', action:'add'}, {path:'//engine/render/materials/MaterialCache.cpp', action:'edit'} ] },
+  { cl: 88041, author: 'j.alvarez', date: '10 days ago', depot: '//tools/build', tag: 'Tooling', summary: 'Auto-bisect script for shader regressions', linesAdded: 210, linesRemoved: 12,
+    description: 'A CLI that bisects across changelists to find which one introduced a visual shader regression, using perceptual diff against golden screenshots. Cuts triage time from hours to minutes.',
+    files: [ {path:'//tools/build/bisect/shader_bisect.py', action:'add'}, {path:'//tools/build/golden/GoldenCompare.py', action:'edit'} ] },
+  { cl: 88012, author: 'r.osei', date: '11 days ago', depot: '//game/net', tag: 'Security', summary: 'Rate-limit and validate lobby join payloads', linesAdded: 152, linesRemoved: 19,
+    description: 'Lobby join requests were not size-capped or rate-limited, allowing a malformed-payload DoS against the matchmaking service. Adds server-side validation and a per-IP token bucket.',
+    files: [ {path:'//game/net/lobby/LobbyJoinHandler.cpp', action:'edit'}, {path:'//game/net/security/RateLimiter.cpp', action:'add'} ] },
+  { cl: 87988, author: 'k.chen', date: '12 days ago', depot: '//game/main', tag: 'Bugfix', summary: 'Fix save corruption on quit during autosave', linesAdded: 47, linesRemoved: 15,
+    description: 'Quitting mid-autosave could leave a truncated save file with no valid backup. Adds an atomic write-then-rename pattern and keeps the previous save until the new one is confirmed valid.',
+    files: [ {path:'//game/main/save/SaveManager.cpp', action:'edit'}, {path:'//game/main/save/tests/save_atomic_test.cpp', action:'add'} ] },
+  { cl: 87954, author: 'm.dubois', date: '2 weeks ago', depot: '//game/ui', tag: 'UI/UX', summary: 'Settings menu search with fuzzy match', linesAdded: 176, linesRemoved: 8,
+    description: 'The settings menu had grown to 140+ options across 9 tabs. Adds a search bar with fuzzy matching that jumps to and highlights the matching row across any tab.',
+    files: [ {path:'//game/ui/settings/SettingsSearch.tsx', action:'add'}, {path:'//game/ui/settings/SettingsRoot.tsx', action:'edit'} ] },
+  { cl: 87930, author: 'j.alvarez', date: '2 weeks ago', depot: '//engine/physics', tag: 'Performance', summary: 'Broad-phase collision using a rebuilt spatial hash', linesAdded: 302, linesRemoved: 210,
+    description: 'Swapped the old uniform grid broad-phase for a spatial hash sized from scene density, cutting physics step time on the city benchmark by roughly a third at high entity counts.',
+    files: [ {path:'//engine/physics/broadphase/SpatialHash.cpp', action:'add'}, {path:'//engine/physics/broadphase/UniformGrid.cpp', action:'delete'}, {path:'//engine/physics/PhysicsWorld.cpp', action:'edit'} ] },
+  { cl: 87901, author: 'r.osei', date: '2 weeks ago', depot: '//tools/build', tag: 'Refactor', summary: 'Split the monolithic CI pipeline into per-platform jobs', linesAdded: 260, linesRemoved: 420,
+    description: 'One giant CI job built all platforms serially and any failure blocked everyone. Split into independent per-platform jobs that run in parallel and fail independently.',
+    files: [ {path:'//tools/build/ci/pipeline.yml', action:'delete'}, {path:'//tools/build/ci/windows.yml', action:'add'}, {path:'//tools/build/ci/linux.yml', action:'add'}, {path:'//tools/build/ci/console.yml', action:'add'} ] }
+];
+
+class Component extends DCLogic {
+  state = {
+    search: '',
+    depotFilter: 'all',
+    tagFilter: 'all',
+    selected: {},
+    detailClId: null,
+    recs: [],
+    postTitle: '',
+    postIntro: '',
+    postConclusion: '',
+    postMarkdown: '',
+    postView: 'rendered',
+    darkMode: false,
+    connectionModalOpen: false,
+    serverAddress: 'ssl:perforce.internal:1666',
+    username: 'demo.user',
+    password: '',
+    connectionStatus: 'disconnected',
+    connectionError: '',
+    formServerAddress: 'ssl:perforce.internal:1666',
+    formUsername: 'demo.user',
+    formPassword: ''
+  };
+
+  toggleDarkMode = () => this.setState((s) => ({ darkMode: !s.darkMode }));
+  openConnectionModal = () => this.setState((s) => ({ connectionModalOpen: true, formServerAddress: s.serverAddress, formUsername: s.username, formPassword: s.password, connectionError: '' }));
+  closeConnectionModal = () => this.setState({ connectionModalOpen: false });
+  onServerAddressChange = (e) => this.setState({ formServerAddress: e.target.value });
+  onUsernameChange = (e) => this.setState({ formUsername: e.target.value });
+  onPasswordChange = (e) => this.setState({ formPassword: e.target.value });
+
+  onTestConnection = () => {
+    const { formServerAddress, formUsername, formPassword } = this.state;
+    if (!formServerAddress.trim() || !formUsername.trim() || !formPassword.trim()) {
+      this.setState({ connectionError: 'All fields are required.', connectionStatus: 'disconnected' });
+      return;
+    }
+    this.setState({
+      serverAddress: formServerAddress.trim(), username: formUsername.trim(), password: formPassword,
+      connectionStatus: 'connected', connectionError: ''
+    });
+  };
+
+  onSearch = (e) => this.setState({ search: e.target.value });
+  onDepotFilter = (e) => this.setState({ depotFilter: e.target.value });
+  onTagFilter = (e) => this.setState({ tagFilter: e.target.value });
+  clearSelection = () => this.setState({ selected: {}, recs: [], postTitle: '', postIntro: '', postConclusion: '', postMarkdown: '' });
+  closeDetail = () => this.setState({ detailClId: null });
+  setViewRendered = () => this.setState({ postView: 'rendered' });
+  setViewMarkdown = () => this.setState({ postView: 'markdown' });
+  stopProp = (e) => e.stopPropagation();
+
+  toggleSelect(clId) {
+    this.setState((s) => ({ selected: { ...s.selected, [clId]: !s.selected[clId] } }));
+  }
+
+  buildIdea(cl, rank) {
+    const firstWord = cl.summary.split(' ')[0];
+    const isAcronymStart = firstWord.length > 1 && firstWord === firstWord.toUpperCase();
+    const lowered = isAcronymStart ? cl.summary : cl.summary.charAt(0).toLowerCase() + cl.summary.slice(1);
+    const t = TEMPLATES[cl.tag](lowered);
+    const totalLines = cl.linesAdded + cl.linesRemoved;
+    const score = Math.max(62, Math.min(98, 60 + Math.floor(totalLines / 40) + (cl.tag === 'Feature' ? 8 : 0)));
+    const colors = TAG_COLORS[cl.tag];
+    return {
+      cl: cl.cl, rank, tag: cl.tag, tagBg: colors.bg, tagColor: colors.color, depot: cl.depot,
+      score, title: t.title, altTitle: t.altTitle, angle: t.angle, keyPoints: t.keyPoints,
+      rationale: `${t.angle} Backed by CL ${cl.cl} (${cl.depot}, +${cl.linesAdded}/-${cl.linesRemoved} lines).`
+    };
+  }
+
+  onGenerate = () => {
+    const selectedIds = Object.keys(this.state.selected).filter((k) => this.state.selected[k]).map(Number);
+    const chosen = CHANGELISTS.filter((c) => selectedIds.includes(c.cl));
+    const sections = chosen.map((cl, i) => this.buildIdea(cl, i + 1)).sort((a, b) => b.score - a.score);
+    sections.forEach((r, i) => (r.rank = i + 1));
+
+    const depots = [...new Set(chosen.map((c) => c.depot))];
+    const tagCounts = {};
+    chosen.forEach((c) => (tagCounts[c.tag] = (tagCounts[c.tag] || 0) + 1));
+    const dominantTag = Object.keys(tagCounts).sort((a, b) => tagCounts[b] - tagCounts[a])[0] || 'Feature';
+    const postTitle = chosen.length === 1
+      ? sections[0].title
+      : `This Week Under the Hood: ${dominantTag.toLowerCase()} work across ${depots.length} depot${depots.length === 1 ? '' : 's'}`;
+    const postIntro = chosen.length === 1
+      ? `A closer look at CL ${chosen[0].cl}, ${chosen[0].summary.toLowerCase()}.`
+      : `${chosen.length} changelists landed recently touching ${depots.join(', ')}. Here's what shipped, why it mattered, and the story worth telling about each one.`;
+    const postConclusion = chosen.length === 1
+      ? `That's the full picture for CL ${chosen[0].cl} — a good candidate for a standalone post.`
+      : `Together these ${chosen.length} changes tell a bigger story about where the project is headed. Worth stitching into one post, or splitting across a short series.`;
+
+    let md = `# ${postTitle}\n\n${postIntro}\n\n`;
+    sections.forEach((r) => {
+      md += `## ${r.title}\n\n*${r.tag} — CL ${r.cl}, ${r.depot}*\n\n${r.angle}\n\n`;
+      r.keyPoints.forEach((kp) => (md += `- ${kp}\n`));
+      md += `\n`;
+    });
+    md += `${postConclusion}\n`;
+
+    this.setState({ recs: sections, postTitle, postIntro, postConclusion, postMarkdown: md });
+  };
+
+  renderVals() {
+    const s = this.state;
+    const dark = s.darkMode;
+    const theme = dark ? {
+      pageBg: '#1c1c1f', panelBg: '#232327', cardBg: '#26262b', inputBg: '#2c2c31',
+      textPrimary: '#f4f4f5', textSecondary: '#a1a1aa', textMuted: '#71717a',
+      border: '#3a3a40', borderSoft: '#333338', rowSelectedBg: '#2e2e57', emptyRowBg: '#26262b',
+      toggleTrackBg: '#2c2c31', overlayBg: 'rgba(0,0,0,0.6)', accent: '#818cf8'
+    } : {
+      pageBg: '#f5f5f7', panelBg: '#ffffff', cardBg: '#ffffff', inputBg: '#fafafa',
+      textPrimary: '#18181b', textSecondary: '#71717a', textMuted: '#a1a1aa',
+      border: '#e4e4e7', borderSoft: '#f1f1f2', rowSelectedBg: '#eef2ff', emptyRowBg: '#fff',
+      toggleTrackBg: '#f0f0f2', overlayBg: 'rgba(0,0,0,0.4)', accent: '#6366f1'
+    };
+    const search = s.search.trim().toLowerCase();
+    const depots = [...new Set(CHANGELISTS.map((c) => c.depot))];
+    const tags = Object.keys(TAG_COLORS);
+
+    const filteredChangelists = CHANGELISTS.filter((cl) => {
+      if (s.depotFilter !== 'all' && cl.depot !== s.depotFilter) return false;
+      if (s.tagFilter !== 'all' && cl.tag !== s.tagFilter) return false;
+      if (search) {
+        const hay = `${cl.cl} ${cl.summary} ${cl.author} ${cl.depot}`.toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      return true;
+    }).map((cl) => {
+      const colors = TAG_COLORS[cl.tag];
+      const isSelected = !!s.selected[cl.cl];
+      return {
+        cl: cl.cl, author: cl.author, date: cl.date, depot: cl.depot, tag: cl.tag,
+        summary: cl.summary, linesAdded: cl.linesAdded, linesRemoved: cl.linesRemoved,
+        fileCountLabel: `${cl.files.length} file${cl.files.length === 1 ? '' : 's'}`,
+        tagBg: colors.bg, tagColor: colors.color,
+        isSelected, rowBg: isSelected ? theme.rowSelectedBg : theme.emptyRowBg,
+        onOpenDetail: () => this.setState({ detailClId: cl.cl }),
+        onToggleSelect: () => this.toggleSelect(cl.cl),
+        onToggleSelectStop: (e) => e.stopPropagation()
+      };
+    });
+
+    const selectedCount = Object.values(s.selected).filter(Boolean).length;
+
+    let detail = null;
+    if (s.detailClId != null) {
+      const cl = CHANGELISTS.find((c) => c.cl === s.detailClId);
+      if (cl) {
+        const isSelected = !!s.selected[cl.cl];
+        detail = {
+          cl: cl.cl, author: cl.author, date: cl.date, depot: cl.depot, summary: cl.summary,
+          description: cl.description, linesAdded: cl.linesAdded, linesRemoved: cl.linesRemoved,
+          fileCountLabel: `${cl.files.length} file${cl.files.length === 1 ? '' : 's'} changed`,
+          files: cl.files.map((f) => ({
+            path: f.path,
+            actionLetter: f.action === 'add' ? 'A' : f.action === 'delete' ? 'D' : 'E',
+            actionColor: f.action === 'add' ? '#16a34a' : f.action === 'delete' ? '#dc2626' : '#71717a'
+          })),
+          selectBtnLabel: isSelected ? 'Remove from selection' : 'Add to selection',
+          onSelectFromDetail: () => this.toggleSelect(cl.cl)
+        };
+      }
+    }
+
+    return {
+      theme, darkMode: dark, toggleDarkMode: this.toggleDarkMode, darkModeLabel: dark ? 'Light mode' : 'Dark mode',
+      connectionModalOpen: s.connectionModalOpen, openConnectionModal: this.openConnectionModal, closeConnectionModal: this.closeConnectionModal,
+      formServerAddress: s.formServerAddress, formUsername: s.formUsername, formPassword: s.formPassword,
+      onServerAddressChange: this.onServerAddressChange, onUsernameChange: this.onUsernameChange, onPasswordChange: this.onPasswordChange,
+      onTestConnection: this.onTestConnection, connectionError: s.connectionError,
+      serverAddress: s.serverAddress,
+      connectionDotColor: s.connectionStatus === 'connected' ? '#16a34a' : '#a1a1aa',
+      connectionStatusLabel: s.connectionModalOpen && s.connectionStatus === 'connected' ? `Connected as ${s.username}` : '',
+      search: s.search, depotFilter: s.depotFilter, tagFilter: s.tagFilter,
+      depots, tags, filteredChangelists,
+      noResults: filteredChangelists.length === 0,
+      resultCountLabel: `${filteredChangelists.length} changelist${filteredChangelists.length === 1 ? '' : 's'}`,
+      onSearch: this.onSearch, onDepotFilter: this.onDepotFilter, onTagFilter: this.onTagFilter,
+      clearSelection: this.clearSelection,
+      selectedCount, selectedPlural: selectedCount === 1 ? '' : 's',
+      generateDisabled: selectedCount === 0,
+      generateBtnBg: selectedCount === 0 ? '#a5a5ad' : '#18181b',
+      generateBtnOpacity: selectedCount === 0 ? 0.6 : 1,
+      onGenerate: this.onGenerate,
+      showEmptyState: s.recs.length === 0,
+      hasPost: s.recs.length > 0,
+      recs: s.recs,
+      postTitle: s.postTitle, postIntro: s.postIntro, postConclusion: s.postConclusion,
+      postMarkdown: s.postMarkdown,
+      showRendered: s.recs.length > 0 && s.postView === 'rendered',
+      showMarkdown: s.recs.length > 0 && s.postView === 'markdown',
+      setViewRendered: this.setViewRendered, setViewMarkdown: this.setViewMarkdown,
+      viewBgRendered: s.postView === 'rendered' ? '#fff' : 'transparent', viewColorRendered: s.postView === 'rendered' ? '#18181b' : '#71717a',
+      viewBgMarkdown: s.postView === 'markdown' ? '#fff' : 'transparent', viewColorMarkdown: s.postView === 'markdown' ? '#18181b' : '#71717a',
+      detailOpen: detail != null, detail: detail || {},
+      closeDetail: this.closeDetail, stopProp: this.stopProp
+    };
+  }
+}
+
+</script>
+</body>
+</html>

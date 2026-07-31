@@ -1,0 +1,14 @@
+{
+  "name": "perforce-blog-recommender",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reads real Perforce changelist history and drafts a blog post from the selected changelists.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.68.0",
+    "express": "^4.21.2"
+  }
+}

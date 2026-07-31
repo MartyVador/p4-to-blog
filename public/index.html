@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Changelist &rarr; Blog</title>
+<style>
+  body { margin: 0; background: #f5f5f7; -webkit-text-size-adjust: 100%; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 4px; }
+  html, body, #app { height: 100%; }
+  /* Mobile browser chrome makes 100vh taller than the visible area. */
+  @supports (height: 100dvh) { html, body, #app { height: 100dvh; } }
+
+  @media (max-width: 760px) {
+    /* iOS Safari zooms the page when focusing a control under 16px. */
+    input, select, textarea { font-size: 16px !important; }
+    /* Comfortable tap targets without restyling every button inline. */
+    button { min-height: 34px; }
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+'use strict';
+
+const TAG_COLORS = {
+  Feature: { bg: '#eef2ff', color: '#4338ca' },
+  Bugfix: { bg: '#fef2f2', color: '#b91c1c' },
+  Performance: { bg: '#f0fdf4', color: '#15803d' },
+  Refactor: { bg: '#faf5ff', color: '#7e22ce' },
+  Tooling: { bg: '#fff7ed', color: '#c2410c' },
+  'UI/UX': { bg: '#fdf2f8', color: '#be185d' },
+  Security: { bg: '#f0fdfa', color: '#0f766e' }
+};
+
+const THEMES = {
+  dark: {
+    pageBg: '#1c1c1f', panelBg: '#232327', cardBg: '#26262b', inputBg: '#2c2c31',
+    textPrimary: '#f4f4f5', textSecondary: '#a1a1aa', textMuted: '#71717a',
+    border: '#3a3a40', borderSoft: '#333338', rowSelectedBg: '#2e2e57', emptyRowBg: '#26262b',
+    toggleTrackBg: '#2c2c31', overlayBg: 'rgba(0,0,0,0.6)', accent: '#818cf8'
+  },
+  light: {
+    pageBg: '#f5f5f7', panelBg: '#ffffff', cardBg: '#ffffff', inputBg: '#fafafa',
+    textPrimary: '#18181b', textSecondary: '#71717a', textMuted: '#a1a1aa',
+    border: '#e4e4e7', borderSoft: '#f1f1f2', rowSelectedBg: '#eef2ff', emptyRowBg: '#fff',
+    toggleTrackBg: '#f0f0f2', overlayBg: 'rgba(0,0,0,0.4)', accent: '#6366f1'
+  }
+};
+
+const state = {
+  changelists: [],
+  depots: [],
+  depotError: '',
+  aiModalOpen: false,
+  ai: null,            // server-provided settings (never includes the API key)
+  aiForm: null,        // working copy while the modal is open
+  aiModels: [],
+  aiModelsError: '',
+  aiLoadingModels: false,
+  aiSaving: false,
+  aiError: '',
+  aiSaved: false,
+  // Two panes don't fit side by side on a phone, so below this width they
+  // become tabs and only one is shown at a time.
+  narrow: window.matchMedia('(max-width: 760px)').matches,
+  mobileTab: 'list',
+  depotPath: '//...',
+  diagnostics: [],
+  diagnosing: false,
+  loading: false,
+  loadError: '',
+  search: '',
+  depotFilter: 'all',
+  tagFilter: 'all',
+  selected: {},
+  detailClId: null,
+  recs: [],
+  postTitle: '',
+  postIntro: '',
+  postConclusion: '',
+  postMarkdown: '',
+  postView: 'rendered',
+  generating: false,
+  generateError: '',
+  darkMode: false,
+  connectionModalOpen: false,
+  serverAddress: '',
+  username: '',
+  connectionStatus: 'disconnected',
+  connectionError: '',
+  connecting: false,
+  formServerAddress: '',
+  formUsername: '',
+  formPassword: ''
+};
+
+const esc = (value) => String(value == null ? '' : value)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+function setState(patch) {
+  Object.assign(state, patch);
+  render();
+}
+
+/* ---------------------------------------------------------------- data */
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  return body;
+}
+
+async function loadStatus() {
+  try {
+    const status = await api('/api/status');
+    state.serverAddress = status.serverAddress;
+    state.username = status.username;
+    state.formServerAddress = status.serverAddress === 'not configured' ? '' : status.serverAddress;
+    state.formUsername = status.username;
+    state.connectionStatus = status.connected ? 'connected' : 'disconnected';
+    if (status.connected) {
+      await Promise.all([loadDepots(), loadChangelists()]);
+      return;
+    }
+  } catch (err) {
+    state.loadError = err.message;
+  }
+  render();
+}
+
+// The depot list comes from the server itself (`p4 depots`), not from whatever
+// depots the loaded changelists happen to touch.
+async function loadDepots() {
+  try {
+    const { depots } = await api('/api/depots');
+    setState({ depots, depotError: '' });
+  } catch (err) {
+    setState({ depots: [], depotError: err.message });
+  }
+}
+
+async function loadChangelists() {
+  const path = state.depotPath.trim() || '//...';
+  setState({ loading: true, loadError: '', depotPath: path });
+  try {
+    // No limit param — the server applies P4_CHANGELIST_LIMIT from the .env file.
+    const { changelists } = await api(`/api/changelists?path=${encodeURIComponent(path)}`);
+    setState({ changelists, loading: false });
+  } catch (err) {
+    setState({ changelists: [], loading: false, loadError: err.message });
+  }
+}
+
+/* ------------------------------------------------------------ ai settings */
+
+async function loadAiSettings() {
+  try {
+    setState({ ai: await api('/api/ai/settings') });
+  } catch (err) {
+    setState({ aiError: err.message });
+  }
+}
+
+function providerById(id) {
+  const list = (state.ai && state.ai.providers) || [];
+  return list.find((p) => p.id === id) || { effortLevels: [], defaultBaseUrl: '', defaultModel: '' };
+}
+
+async function loadAiModels() {
+  const form = state.aiForm;
+  if (!form) return;
+  setState({ aiLoadingModels: true, aiModelsError: '', aiModels: [] });
+  const query = new URLSearchParams({ provider: form.provider, baseUrl: form.baseUrl });
+  // Send the typed key only if it hasn't been saved yet.
+  if (form.apiKey.trim()) query.set('apiKey', form.apiKey.trim());
+  try {
+    const { models } = await api(`/api/ai/models?${query}`);
+    setState({ aiModels: models, aiLoadingModels: false });
+  } catch (err) {
+    setState({ aiLoadingModels: false, aiModelsError: err.message });
+  }
+}
+
+async function saveAiSettings() {
+  const form = state.aiForm;
+  if (!form) return;
+  setState({ aiSaving: true, aiError: '', aiSaved: false });
+  try {
+    const ai = await api('/api/ai/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(form),
+    });
+    setState({
+      ai,
+      aiSaving: false,
+      aiSaved: true,
+      // Drop the typed key from the form now that the server holds it.
+      aiForm: { ...form, apiKey: '' },
+    });
+  } catch (err) {
+    setState({ aiSaving: false, aiError: err.message });
+  }
+}
+
+// Runs whether or not the connection succeeded — that is the point of it.
+async function runDiagnostics() {
+  setState({ diagnosing: true, diagnostics: [] });
+  try {
+    const { steps } = await api('/api/diagnose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        serverAddress: state.formServerAddress.trim(),
+        username: state.formUsername.trim(),
+        password: state.formPassword
+      })
+    });
+    setState({ diagnosing: false, diagnostics: steps });
+  } catch (err) {
+    setState({ diagnosing: false, diagnostics: [{ label: 'Diagnostics', ok: false, detail: err.message }] });
+  }
+}
+
+async function connect() {
+  const { formServerAddress, formUsername, formPassword } = state;
+  if (!formServerAddress.trim() || !formUsername.trim()) {
+    setState({ connectionError: 'Server address and account are required.' });
+    return;
+  }
+  setState({ connecting: true, connectionError: '' });
+  try {
+    const status = await api('/api/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        serverAddress: formServerAddress.trim(),
+        username: formUsername.trim(),
+        password: formPassword
+      })
+    });
+    setState({
+      connecting: false,
+      serverAddress: status.serverAddress,
+      username: status.username,
+      connectionStatus: 'connected',
+      connectionError: '',
+      formPassword: ''
+    });
+    await Promise.all([loadDepots(), loadChangelists()]);
+  } catch (err) {
+    setState({ connecting: false, connectionStatus: 'disconnected', connectionError: err.message });
+    // Show which step actually broke without making anyone click twice.
+    await runDiagnostics();
+  }
+}
+
+async function generate() {
+  const ids = Object.keys(state.selected).filter((k) => state.selected[k]).map(Number);
+  if (!ids.length) return;
+  setState({ generating: true, generateError: '' });
+  try {
+    const post = await api('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ changelists: ids })
+    });
+    // On a phone the post lives on the other tab — go there rather than
+    // leaving the user looking at an unchanged list.
+    setState({ generating: false, ...post, mobileTab: 'post' });
+  } catch (err) {
+    setState({ generating: false, generateError: err.message });
+  }
+}
+
+/* ------------------------------------------------------------- actions */
+
+const actions = {
+  'toggle-dark': () => setState({ darkMode: !state.darkMode }),
+  'open-connection': () => setState({
+    connectionModalOpen: true,
+    formServerAddress: state.serverAddress === 'not configured' ? '' : state.serverAddress,
+    formUsername: state.username,
+    connectionError: '',
+    diagnostics: []
+  }),
+  'close-connection': () => setState({ connectionModalOpen: false }),
+  'open-ai': () => {
+    const ai = state.ai;
+    if (!ai) return;
+    setState({
+      aiModalOpen: true,
+      aiError: '',
+      aiSaved: false,
+      aiModels: [],
+      aiModelsError: '',
+      aiForm: {
+        provider: ai.provider,
+        baseUrl: ai.baseUrl,
+        model: ai.model,
+        effort: ai.effort,
+        systemPrompt: ai.systemPrompt,
+        apiKey: '',
+      },
+    });
+  },
+  'close-ai': () => setState({ aiModalOpen: false }),
+  'tab-list': () => setState({ mobileTab: 'list' }),
+  'tab-post': () => setState({ mobileTab: 'post' }),
+  'load-models': loadAiModels,
+  'save-ai': saveAiSettings,
+  'reset-prompt': () => setState({
+    aiForm: { ...state.aiForm, systemPrompt: state.ai.systemPrompt },
+    aiSaved: false,
+  }),
+  connect,
+  diagnose: runDiagnostics,
+  refresh: () => Promise.all([loadDepots(), loadChangelists()]),
+  'clear-selection': () => setState({
+    selected: {}, recs: [], postTitle: '', postIntro: '', postConclusion: '', postMarkdown: '', generateError: ''
+  }),
+  'close-detail': () => setState({ detailClId: null }),
+  'view-rendered': () => setState({ postView: 'rendered' }),
+  'view-markdown': () => setState({ postView: 'markdown' }),
+  generate,
+  'open-detail': (el) => setState({ detailClId: Number(el.dataset.cl) }),
+  'toggle-select': (el) => toggleSelect(Number(el.dataset.cl)),
+  stop: () => {}
+};
+
+function toggleSelect(clId) {
+  setState({ selected: { ...state.selected, [clId]: !state.selected[clId] } });
+}
+
+document.getElementById('app').addEventListener('click', (event) => {
+  const target = event.target.closest('[data-action]');
+  if (!target) return;
+  const action = actions[target.dataset.action];
+  if (!action) return;
+  action(target);
+});
+
+document.getElementById('app').addEventListener('input', (event) => {
+  const aiField = event.target.dataset.aiField;
+  if (aiField) {
+    setState({ aiForm: { ...state.aiForm, [aiField]: event.target.value }, aiSaved: false });
+    return;
+  }
+  const field = event.target.dataset.field;
+  if (!field) return;
+  setState({ [field]: event.target.value });
+});
+
+document.getElementById('app').addEventListener('change', (event) => {
+  const aiField = event.target.dataset.aiSelect;
+  if (aiField) {
+    const next = { ...state.aiForm, [aiField]: event.target.value };
+    // Switching provider changes what the URL and model even mean, so reset
+    // them to that provider's defaults rather than carrying stale values over.
+    if (aiField === 'provider') {
+      const p = providerById(event.target.value);
+      next.baseUrl = p.defaultBaseUrl;
+      next.model = p.defaultModel;
+      setState({ aiForm: next, aiModels: [], aiModelsError: '', aiSaved: false });
+      return;
+    }
+    setState({ aiForm: next, aiSaved: false });
+    return;
+  }
+
+  const field = event.target.dataset.selectField;
+  if (!field) return;
+  const value = event.target.value;
+  // Picking a depot re-queries Perforce scoped to it, so you get that depot's
+  // history rather than only the entries already on screen.
+  if (field === 'depotFilter') {
+    setState({ depotFilter: value, depotPath: value === 'all' ? '//...' : `${value}/...` });
+    if (state.connectionStatus === 'connected') loadChangelists();
+    return;
+  }
+  setState({ [field]: value });
+});
+
+// The depot path is editable because a restrictive protections table can hide
+// //... entirely while still granting read on a specific path.
+document.getElementById('app').addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.target.dataset.field !== 'depotPath') return;
+  // A hand-typed path is the authority — otherwise the depot select would keep
+  // filtering out the rows it just fetched.
+  setState({ depotFilter: 'all' });
+  loadChangelists();
+});
+
+/* -------------------------------------------------------------- render */
+
+function derive() {
+  const theme = state.darkMode ? THEMES.dark : THEMES.light;
+  const search = state.search.trim().toLowerCase();
+  // Real server depots, plus any depot seen in the loaded changelists as a
+  // fallback for servers where `p4 depots` is restricted.
+  const serverDepots = state.depots.map((d) => d.name);
+  const seenDepots = state.changelists.map((c) => c.depotRoot).filter(Boolean);
+  const depots = [...new Set([...serverDepots, ...seenDepots])].sort();
+  const tags = Object.keys(TAG_COLORS);
+
+  const filtered = state.changelists.filter((cl) => {
+    if (state.depotFilter !== 'all' && !inDepot(cl, state.depotFilter)) return false;
+    if (state.tagFilter !== 'all' && cl.tag !== state.tagFilter) return false;
+    if (search) {
+      const hay = `${cl.cl} ${cl.summary} ${cl.author} ${cl.depot}`.toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    return true;
+  });
+
+  const selectedCount = Object.values(state.selected).filter(Boolean).length;
+  const detail = state.detailClId == null
+    ? null
+    : state.changelists.find((c) => c.cl === state.detailClId) || null;
+
+  return { theme, depots, tags, filtered, selectedCount, detail };
+}
+
+// A changelist can straddle depots, so match on any of its files too.
+function inDepot(cl, depot) {
+  return cl.depotRoot === depot
+    || cl.depot === depot
+    || cl.files.some((f) => f.path.startsWith(`${depot}/`));
+}
+
+function fileCountLabel(cl, suffix) {
+  return `${cl.files.length} file${cl.files.length === 1 ? '' : 's'}${suffix || ''}`;
+}
+
+function renderRow(cl, theme) {
+  const colors = TAG_COLORS[cl.tag] || TAG_COLORS.Feature;
+  const isSelected = !!state.selected[cl.cl];
+  return `
+  <div data-action="open-detail" data-cl="${cl.cl}" style="display:flex;gap:10px;padding:11px 16px;border-bottom:1px solid ${theme.borderSoft};cursor:pointer;background:${isSelected ? theme.rowSelectedBg : theme.emptyRowBg}">
+    <div data-action="stop" style="padding-top:2px">
+      <input type="checkbox" data-action="toggle-select" data-cl="${cl.cl}" ${isSelected ? 'checked' : ''} style="width:15px;height:15px;cursor:pointer;accent-color:${theme.accent}" />
+    </div>
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;align-items:baseline;gap:8px">
+        <span style="font-family:ui-monospace,monospace;font-size:12px;color:${theme.textSecondary};font-weight:600">CL ${cl.cl}</span>
+        <span style="font-size:10px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;padding:1px 6px;border-radius:4px;background:${colors.bg};color:${colors.color}">${esc(cl.tag)}</span>
+        <span style="flex:1"></span>
+        <span style="font-size:11px;color:${theme.textMuted}">${esc(cl.date)}</span>
+      </div>
+      <div style="font-size:13px;font-weight:600;color:${theme.textPrimary};margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(cl.summary)}</div>
+      <div style="font-size:11px;color:${theme.textSecondary};margin-top:2px;font-family:ui-monospace,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(cl.depot)} &middot; ${esc(cl.author)} &middot; ${fileCountLabel(cl)} &middot; <span style="color:#16a34a">+${cl.linesAdded}</span> <span style="color:#dc2626">-${cl.linesRemoved}</span></div>
+    </div>
+  </div>`;
+}
+
+function renderListBody(filtered, theme) {
+  if (state.loading) {
+    return `<div style="padding:40px 20px;text-align:center;color:${theme.textMuted};font-size:13px">Loading changelists from Perforce&hellip;</div>`;
+  }
+  if (state.loadError) {
+    return `<div style="padding:28px 20px;text-align:center;color:${theme.textSecondary};font-size:13px;line-height:1.6">
+      <div style="color:#dc2626;margin-bottom:8px">${esc(state.loadError)}</div>
+      <div style="font-size:12px;color:${theme.textMuted}">Check the server settings, then try again.</div>
+    </div>`;
+  }
+  if (!filtered.length) {
+    const wrap = (body) => `<div style="padding:40px 20px;text-align:center;color:${theme.textMuted};font-size:13px;line-height:1.6">${body}</div>`;
+    if (state.changelists.length) return wrap('No changelists match your filters.');
+    if (state.connectionStatus !== 'connected') {
+      return wrap(`No changelists loaded yet. Connect to a Perforce server to get started.
+        <div style="margin-top:12px"><button data-action="open-connection" style="border:1px solid ${theme.border};background:${theme.inputBg};color:${theme.textSecondary};font-size:12px;font-weight:600;padding:7px 12px;border-radius:6px;cursor:pointer">Open server settings</button></div>`);
+    }
+    // Connected, but the query came back empty — say so rather than telling
+    // someone who is already connected to connect.
+    return wrap(`Connected to ${esc(state.serverAddress)}, but Perforce returned no submitted
+      changelists for <span style="font-family:ui-monospace,monospace">${esc(state.depotPath)}</span>.
+      <div style="margin-top:10px;font-size:12px">Try a different depot path above, or run diagnostics to see
+      what your account can read.</div>
+      <div style="margin-top:12px"><button data-action="open-connection" style="border:1px solid ${theme.border};background:${theme.inputBg};color:${theme.textSecondary};font-size:12px;font-weight:600;padding:7px 12px;border-radius:6px;cursor:pointer">Run diagnostics</button></div>`);
+  }
+  return filtered.map((cl) => renderRow(cl, theme)).join('');
+}
+
+function renderRenderedPost(theme) {
+  const sections = state.recs.map((r) => `
+    <div style="margin-bottom:22px">
+      <div style="font-size:17px;font-weight:700;color:${theme.textPrimary};margin-bottom:4px">${esc(r.title)}</div>
+      <div style="font-size:11.5px;color:${theme.textMuted};font-style:italic;margin-bottom:8px">${esc(r.tag)} &mdash; CL ${esc(r.cl)}, ${esc(r.depot)}</div>
+      <div style="font-size:13.5px;color:${theme.textSecondary};line-height:1.7;margin-bottom:8px">${esc(r.angle)}</div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        ${r.keyPoints.map((kp) => `<div style="font-size:13.5px;color:${theme.textSecondary};display:flex;gap:8px;line-height:1.6"><span style="color:${theme.accent}">&bull;</span>${esc(kp)}</div>`).join('')}
+      </div>
+    </div>`).join('');
+
+  return `
+  <div style="width:100%;max-width:760px;margin:0 auto;background:${theme.cardBg};border:1px solid ${theme.border};border-radius:10px;padding:clamp(16px,4vw,36px);box-sizing:border-box">
+    <div style="font-size:clamp(17px,3vw,22px);font-weight:800;color:${theme.textPrimary};line-height:1.3;margin-bottom:14px">${esc(state.postTitle)}</div>
+    <div style="font-size:14px;color:${theme.textSecondary};line-height:1.7;margin-bottom:20px">${esc(state.postIntro)}</div>
+    ${sections}
+    <div style="font-size:14px;color:${theme.textSecondary};line-height:1.7;border-top:1px solid ${theme.border};padding-top:16px">${esc(state.postConclusion)}</div>
+  </div>`;
+}
+
+function renderMainBody(theme) {
+  if (state.generating) {
+    return `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:${theme.textMuted};gap:8px;text-align:center">
+      <div style="font-size:14px;font-weight:600;color:${theme.textSecondary}">Writing the post from your changelists&hellip;</div>
+      <div style="font-size:12px;max-width:320px">Claude is reading the descriptions and file lists you selected.</div>
+    </div>`;
+  }
+  if (state.generateError) {
+    return `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:8px;text-align:center">
+      <div style="font-size:14px;font-weight:600;color:#dc2626">${esc(state.generateError)}</div>
+      <div style="font-size:12px;max-width:360px;color:${theme.textMuted}">Fix the problem above, then generate again.</div>
+    </div>`;
+  }
+  if (!state.recs.length) {
+    return `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:${theme.textMuted};gap:8px;text-align:center">
+      <div style="font-size:34px">&#8594;</div>
+      <div style="font-size:14px;font-weight:600;color:${theme.textSecondary}">Select changelists on the left, then generate</div>
+      <div style="font-size:12px;max-width:320px">Each selected changelist becomes one section of a candidate blog post, tailored to what actually changed.</div>
+    </div>`;
+  }
+  if (state.postView === 'markdown') {
+    return `<div style="width:100%;max-width:760px;margin:0 auto;background:${theme.cardBg};border:1px solid ${theme.border};border-radius:10px;padding:clamp(14px,3.5vw,28px) clamp(14px,4vw,32px);box-sizing:border-box;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:13.5px;line-height:1.75;color:${theme.textPrimary}">${esc(state.postMarkdown)}</div>`;
+  }
+  return renderRenderedPost(theme);
+}
+
+function renderConnectionModal(theme) {
+  if (!state.connectionModalOpen) return '';
+  const dotColor = state.connectionStatus === 'connected' ? '#16a34a' : '#a1a1aa';
+  const statusLabel = state.connectionStatus === 'connected' ? `Connected as ${state.username}` : '';
+  return `
+  <div data-action="close-connection" style="position:fixed;inset:0;background:${theme.overlayBg};display:flex;align-items:center;justify-content:center;z-index:60;padding:12px;box-sizing:border-box">
+    <div data-action="stop" style="width:380px;max-width:94vw;max-height:90vh;overflow-y:auto;box-sizing:border-box;background:${theme.panelBg};color:${theme.textPrimary};border-radius:12px;padding:${state.narrow ? '16px' : '24px'};box-shadow:0 12px 40px rgba(0,0,0,0.3)">
+      <div style="font-size:15px;font-weight:700;margin-bottom:4px">Perforce server connection</div>
+      <div style="font-size:12px;color:${theme.textSecondary};margin-bottom:18px">Used to pull changelist history. Credentials stay on your machine.</div>
+
+      <div style="font-size:11px;font-weight:600;color:${theme.textSecondary};text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px">Server address (P4PORT)</div>
+      <input id="field-serverAddress" data-field="formServerAddress" value="${esc(state.formServerAddress)}" placeholder="ssl:perforce.company.com:1666" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid ${theme.border};border-radius:6px;font-size:13px;outline:none;background:${theme.inputBg};color:${theme.textPrimary};margin-bottom:12px;font-family:ui-monospace,monospace" />
+
+      <div style="font-size:11px;font-weight:600;color:${theme.textSecondary};text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px">Account (P4USER)</div>
+      <input id="field-username" data-field="formUsername" value="${esc(state.formUsername)}" placeholder="jdoe" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid ${theme.border};border-radius:6px;font-size:13px;outline:none;background:${theme.inputBg};color:${theme.textPrimary};margin-bottom:12px" />
+
+      <div style="font-size:11px;font-weight:600;color:${theme.textSecondary};text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px">Password / ticket</div>
+      <input id="field-password" data-field="formPassword" type="password" value="${esc(state.formPassword)}" placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid ${theme.border};border-radius:6px;font-size:13px;outline:none;background:${theme.inputBg};color:${theme.textPrimary};margin-bottom:8px" />
+      <div style="font-size:11px;color:${theme.textMuted};margin-bottom:8px">Leave blank to use the ticket your local p4 client already holds.</div>
+
+      ${state.connectionError ? `<div style="font-size:12px;color:#dc2626;margin-bottom:8px">${esc(state.connectionError)}</div>` : ''}
+      ${statusLabel ? `<div style="font-size:12px;color:${dotColor};margin-bottom:8px;display:flex;align-items:center;gap:6px">
+        <span style="width:7px;height:7px;border-radius:50%;background:${dotColor};display:inline-block"></span>
+        ${esc(statusLabel)}
+      </div>` : ''}
+
+      ${renderDiagnostics(theme)}
+
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button data-action="close-connection" style="flex:1;border:1px solid ${theme.border};background:transparent;color:${theme.textSecondary};font-size:13px;font-weight:600;padding:9px;border-radius:7px;cursor:pointer">Cancel</button>
+        <button data-action="diagnose" style="flex:1;border:1px solid ${theme.border};background:transparent;color:${theme.textSecondary};font-size:13px;font-weight:600;padding:9px;border-radius:7px;cursor:pointer">${state.diagnosing ? 'Checking&hellip;' : 'Diagnose'}</button>
+        <button data-action="connect" style="flex:1;border:none;background:${theme.accent};color:#fff;font-size:13px;font-weight:700;padding:9px;border-radius:7px;cursor:pointer">${state.connecting ? 'Connecting&hellip;' : 'Connect'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderAiModal(theme) {
+  if (!state.aiModalOpen || !state.aiForm) return '';
+  const form = state.aiForm;
+  const provider = providerById(form.provider);
+  const levels = provider.effortLevels || [];
+
+  const label = (text, hint) => `
+    <div style="font-size:11px;font-weight:600;color:${theme.textSecondary};text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px;margin-top:14px">${text}</div>
+    ${hint ? `<div style="font-size:11px;color:${theme.textMuted};margin-bottom:6px;line-height:1.5">${hint}</div>` : ''}`;
+  const input = (attr, value, extra) => `
+    <input ${attr} value="${esc(value)}" ${extra || ''} style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid ${theme.border};border-radius:6px;font-size:13px;outline:none;background:${theme.inputBg};color:${theme.textPrimary};font-family:ui-monospace,monospace" />`;
+  const select = (attr, options) => `
+    <select ${attr} style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid ${theme.border};border-radius:6px;font-size:13px;background:${theme.inputBg};color:${theme.textPrimary}">${options}</select>`;
+
+  const providerOptions = (state.ai.providers || [])
+    .map((p) => `<option value="${esc(p.id)}"${p.id === form.provider ? ' selected' : ''}>${esc(p.label)}</option>`)
+    .join('');
+
+  // Keep the current model selectable even before the list has been fetched.
+  const modelIds = state.aiModels.map((m) => m.id);
+  const modelOptions = [
+    form.model && !modelIds.includes(form.model)
+      ? `<option value="${esc(form.model)}" selected>${esc(form.model)} (current)</option>`
+      : '',
+    ...state.aiModels.map(
+      (m) => `<option value="${esc(m.id)}"${m.id === form.model ? ' selected' : ''}>${esc(m.label)}</option>`
+    ),
+  ].join('');
+
+  const effortOptions = ['off', ...levels]
+    .map((l) => `<option value="${esc(l)}"${l === form.effort ? ' selected' : ''}>${esc(l)}</option>`)
+    .join('');
+
+  return `
+  <div data-action="close-ai" style="position:fixed;inset:0;background:${theme.overlayBg};display:flex;align-items:center;justify-content:center;z-index:60;padding:12px;box-sizing:border-box">
+    <div data-action="stop" style="width:560px;max-width:94vw;max-height:90vh;overflow-y:auto;box-sizing:border-box;background:${theme.panelBg};color:${theme.textPrimary};border-radius:12px;padding:${state.narrow ? '16px' : '24px'};box-shadow:0 12px 40px rgba(0,0,0,0.3)">
+      <div style="font-size:15px;font-weight:700;margin-bottom:4px">AI settings</div>
+      <div style="font-size:12px;color:${theme.textSecondary}">Which model drafts the post. Defaults come from your <span style="font-family:ui-monospace,monospace">.env</span>; changes here apply until the server restarts.</div>
+
+      ${label('Provider')}
+      ${select('data-ai-select="provider"', providerOptions)}
+
+      ${label('API URL', `Default for this provider: <span style="font-family:ui-monospace,monospace">${esc(provider.defaultBaseUrl)}</span>`)}
+      ${input('id="field-aiBaseUrl" data-ai-field="baseUrl"', form.baseUrl, 'placeholder="' + esc(provider.defaultBaseUrl) + '"')}
+
+      ${label('API key', state.ai.hasApiKey ? 'A key is already set — leave blank to keep it.' : 'No key set yet.')}
+      ${input('id="field-aiApiKey" data-ai-field="apiKey" type="password"', form.apiKey, 'placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;"')}
+
+      ${label('Model')}
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div style="flex:1;min-width:180px">${select('data-ai-select="model"', modelOptions || '<option value="">(load the list, or type below)</option>')}</div>
+        <button data-action="load-models" style="border:1px solid ${theme.border};background:${theme.inputBg};color:${theme.textSecondary};font-size:12px;font-weight:600;padding:8px 12px;border-radius:6px;cursor:pointer;white-space:nowrap">${state.aiLoadingModels ? 'Loading&hellip;' : 'Fetch models'}</button>
+      </div>
+      <div style="margin-top:6px">${input('id="field-aiModel" data-ai-field="model"', form.model, 'placeholder="or type a model id"')}</div>
+      ${state.aiModelsError ? `<div style="font-size:11.5px;color:#dc2626;margin-top:6px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(state.aiModelsError)}</div>` : ''}
+
+      ${levels.length
+        ? `${label('Effort', 'Reasoning depth. Models that do not accept it are detected and retried without it.')}${select('data-ai-select="effort"', effortOptions)}`
+        : `${label('Effort')}<div style="font-size:12px;color:${theme.textMuted}">Not supported by this provider.</div>`}
+
+      ${label('System prompt', 'Sent with every generation.')}
+      <textarea id="field-aiSystemPrompt" data-ai-field="systemPrompt" rows="${state.narrow ? 6 : 9}" style="width:100%;box-sizing:border-box;padding:10px;border:1px solid ${theme.border};border-radius:6px;font-size:12.5px;line-height:1.6;outline:none;background:${theme.inputBg};color:${theme.textPrimary};font-family:ui-monospace,monospace;resize:vertical">${esc(form.systemPrompt)}</textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+        <span style="font-size:11px;color:${theme.textMuted}">From ${esc(state.ai.systemPromptSource)}</span>
+        <button data-action="reset-prompt" style="border:none;background:none;color:${theme.accent};font-size:11px;font-weight:600;cursor:pointer;padding:0">reset to saved</button>
+      </div>
+
+      ${state.aiError ? `<div style="font-size:12px;color:#dc2626;margin-top:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(state.aiError)}</div>` : ''}
+      ${state.aiSaved ? `<div style="font-size:12px;color:#16a34a;margin-top:12px">Saved. Used for the next generation.</div>` : ''}
+
+      <div style="display:flex;gap:8px;margin-top:18px">
+        <button data-action="close-ai" style="flex:1;border:1px solid ${theme.border};background:transparent;color:${theme.textSecondary};font-size:13px;font-weight:600;padding:9px;border-radius:7px;cursor:pointer">Close</button>
+        <button data-action="save-ai" style="flex:1;border:none;background:${theme.accent};color:#fff;font-size:13px;font-weight:700;padding:9px;border-radius:7px;cursor:pointer">${state.aiSaving ? 'Saving&hellip;' : 'Save'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Each step reports what p4 actually said, so a blank screen has a cause.
+function renderDiagnostics(theme) {
+  if (!state.diagnostics.length) return '';
+  const rows = state.diagnostics.map((s) => `
+    <div style="padding:7px 0;border-bottom:1px solid ${theme.borderSoft}">
+      <div style="display:flex;gap:7px;align-items:baseline;font-size:12px">
+        <span style="color:${s.ok ? '#16a34a' : '#dc2626'};font-weight:700">${s.ok ? '&#10003;' : '&#10007;'}</span>
+        <span style="font-weight:600;color:${theme.textPrimary}">${esc(s.label)}</span>
+      </div>
+      <div style="font-size:11px;color:${theme.textSecondary};margin-left:19px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(s.detail)}</div>
+      ${s.hint ? `<div style="font-size:11px;color:${theme.textMuted};margin-left:19px;margin-top:3px;line-height:1.5">${esc(s.hint)}</div>` : ''}
+    </div>`).join('');
+  return `<div style="margin-top:14px;border-top:1px solid ${theme.border};padding-top:10px;max-height:260px;overflow-y:auto">
+    <div style="font-size:11px;font-weight:700;color:${theme.textSecondary};text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px">Diagnostics</div>
+    ${rows}
+  </div>`;
+}
+
+function renderDetailPanel(detail, theme) {
+  if (!detail) return '';
+  const isSelected = !!state.selected[detail.cl];
+  const files = detail.files.map((f) => {
+    const letter = f.action === 'add' ? 'A' : f.action === 'delete' ? 'D' : 'E';
+    const color = f.action === 'add' ? '#16a34a' : f.action === 'delete' ? '#dc2626' : '#71717a';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;font-size:11.5px;font-family:ui-monospace,monospace;background:${theme.panelBg};border-bottom:1px solid ${theme.borderSoft}">
+      <span style="width:14px;font-weight:700;color:${color}">${letter}</span>
+      <span style="flex:1;color:${theme.textSecondary};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.path)}</span>
+    </div>`;
+  }).join('');
+
+  return `
+  <div data-action="close-detail" style="position:fixed;inset:0;background:${theme.overlayBg};display:flex;justify-content:flex-end;z-index:50">
+    <div data-action="stop" style="width:${state.narrow ? '100%' : '460px'};max-width:100%;height:100%;background:${theme.panelBg};color:${theme.textPrimary};box-shadow:-8px 0 24px rgba(0,0,0,0.25);overflow-y:auto;padding:${state.narrow ? '16px' : '24px'};box-sizing:border-box">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
+        <div>
+          <div style="font-family:ui-monospace,monospace;font-size:13px;color:${theme.textSecondary};font-weight:600">CL ${detail.cl}</div>
+          <div style="font-size:17px;font-weight:700;margin-top:4px">${esc(detail.summary)}</div>
+        </div>
+        <button data-action="close-detail" style="border:none;background:${theme.toggleTrackBg};color:${theme.textSecondary};width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:15px">&times;</button>
+      </div>
+      <div style="display:flex;gap:14px;font-size:12px;color:${theme.textSecondary};margin-bottom:16px;flex-wrap:wrap">
+        <span>${esc(detail.author)}</span><span>&middot;</span><span>${esc(detail.date)}</span><span>&middot;</span>
+        <span style="font-family:ui-monospace,monospace">${esc(detail.depot)}</span>
+      </div>
+      <div style="font-size:13px;color:${theme.textSecondary};line-height:1.6;background:${theme.inputBg};border:1px solid ${theme.borderSoft};border-radius:8px;padding:12px;margin-bottom:18px;white-space:pre-wrap">${esc(detail.description)}</div>
+      <div style="display:flex;gap:16px;margin-bottom:14px">
+        <div style="font-size:13px;color:#16a34a;font-weight:700">+${detail.linesAdded}</div>
+        <div style="font-size:13px;color:#dc2626;font-weight:700">-${detail.linesRemoved}</div>
+        <div style="font-size:13px;color:${theme.textSecondary}">${fileCountLabel(detail, ' changed')}</div>
+      </div>
+      <div style="font-size:11px;font-weight:700;color:${theme.textSecondary};text-transform:uppercase;letter-spacing:0.3px;margin-bottom:8px">Files</div>
+      <div style="display:flex;flex-direction:column;gap:1px;border:1px solid ${theme.borderSoft};border-radius:8px;overflow:hidden">${files}</div>
+      <button data-action="toggle-select" data-cl="${detail.cl}" style="width:100%;margin-top:20px;border:none;background:${theme.accent};color:#fff;font-size:13px;font-weight:700;padding:11px;border-radius:8px;cursor:pointer">${isSelected ? 'Remove from selection' : 'Add to selection'}</button>
+    </div>
+  </div>`;
+}
+
+function render() {
+  const { theme, depots, tags, filtered, selectedCount, detail } = derive();
+  const app = document.getElementById('app');
+
+  const active = document.activeElement;
+  const focusId = active && active.id ? active.id : null;
+  const focusStart = focusId ? active.selectionStart : null;
+  const focusEnd = focusId ? active.selectionEnd : null;
+
+  const hasPost = state.recs.length > 0;
+  const generateDisabled = selectedCount === 0 || state.generating;
+  const connectionDotColor = state.connectionStatus === 'connected' ? '#16a34a' : '#a1a1aa';
+
+  const depotOptions = ['<option value="all">All depots</option>']
+    .concat(depots.map((d) => `<option value="${esc(d)}"${state.depotFilter === d ? ' selected' : ''}>${esc(d)}</option>`))
+    .join('');
+  const tagOptions = ['<option value="all">All tags</option>']
+    .concat(tags.map((t) => `<option value="${esc(t)}"${state.tagFilter === t ? ' selected' : ''}>${esc(t)}</option>`))
+    .join('');
+
+  const narrow = state.narrow;
+  const showList = !narrow || state.mobileTab === 'list';
+  const showPost = !narrow || state.mobileTab === 'post';
+
+  // On desktop the list keeps its fixed 420px column; on a phone it is the full
+  // width and grows to fill the height. `flex` is spelled out rather than left
+  // to shorthand so it can't reset the basis back to 0.
+  const listPaneStyle = narrow
+    ? `width:100%;flex:1 1 auto;${showList ? 'display:flex' : 'display:none'}`
+    : `width:420px;flex:0 0 420px;display:flex;border-right:1px solid ${theme.border}`;
+
+  const tabButton = (action, label, active) => `
+    <button data-action="${action}" style="flex:1;border:none;padding:9px 8px;font-size:12.5px;font-weight:700;border-radius:6px;cursor:pointer;background:${active ? theme.panelBg : 'transparent'};color:${active ? theme.textPrimary : theme.textSecondary}">${label}</button>`;
+
+  app.innerHTML = `
+  <div style="display:flex;flex-direction:column;height:100vh;height:100dvh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:${theme.textPrimary};background:${theme.pageBg};overflow:hidden">
+
+    <div style="display:flex;align-items:center;gap:${narrow ? '8px' : '12px'};padding:${narrow ? '10px 12px' : '14px 20px'};background:#18181b;color:#fff;flex-shrink:0;flex-wrap:wrap">
+      <div style="width:28px;height:28px;border-radius:6px;background:#f59e0b;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;color:#18181b;font-family:ui-monospace,monospace;flex-shrink:0">P4</div>
+      <div style="font-weight:600;font-size:${narrow ? '14px' : '15px'};letter-spacing:-0.2px">Changelist &rarr; Blog</div>
+      ${narrow ? '' : `<div style="font-size:12px;color:#a1a1aa;border-left:1px solid #3f3f46;padding-left:12px;margin-left:2px">Perforce changelist history &amp; content recommendations</div>`}
+      <div style="flex:1"></div>
+      <button data-action="toggle-dark" style="border:1px solid #3f3f46;background:#27272a;color:#e4e4e7;font-size:11px;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer">${narrow ? (state.darkMode ? 'Light' : 'Dark') : (state.darkMode ? 'Light mode' : 'Dark mode')}</button>
+      <button data-action="open-connection" style="border:1px solid #3f3f46;background:#27272a;color:#e4e4e7;font-size:11px;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:6px">
+        <span style="width:7px;height:7px;border-radius:50%;background:${connectionDotColor};display:inline-block;flex-shrink:0"></span>
+        ${narrow ? 'Server' : 'Server settings'}
+      </button>
+      <button data-action="open-ai" style="border:1px solid #3f3f46;background:#27272a;color:#e4e4e7;font-size:11px;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:6px">
+        <span style="width:7px;height:7px;border-radius:50%;background:${state.ai && state.ai.hasApiKey ? '#16a34a' : '#a1a1aa'};display:inline-block;flex-shrink:0"></span>
+        ${narrow ? 'AI' : 'AI settings'}
+      </button>
+      ${narrow ? '' : `<div style="font-size:12px;color:#a1a1aa;font-family:ui-monospace,monospace">${esc(state.serverAddress || 'not configured')}</div>`}
+    </div>
+
+    ${narrow ? `<div style="display:flex;gap:4px;padding:6px;background:${theme.toggleTrackBg};border-bottom:1px solid ${theme.border};flex-shrink:0">
+      ${tabButton('tab-list', `Changelists${filtered.length ? ` (${filtered.length})` : ''}`, state.mobileTab === 'list')}
+      ${tabButton('tab-post', hasPost ? 'Post' : `Selected (${selectedCount})`, state.mobileTab === 'post')}
+    </div>` : ''}
+
+    <div style="display:flex;flex:1;min-height:0;${narrow ? 'flex-direction:column' : ''}">
+
+      <div style="${listPaneStyle};flex-direction:column;background:${theme.panelBg};min-height:0">
+
+        <div style="padding:14px 16px;border-bottom:1px solid ${theme.borderSoft};display:flex;flex-direction:column;gap:8px">
+          <input id="field-search" data-field="search" placeholder="Search description, author, CL#..." value="${esc(state.search)}" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid ${theme.border};border-radius:6px;font-size:13px;outline:none;background:${theme.inputBg};color:${theme.textPrimary}" />
+          <div style="display:flex;gap:6px">
+            <select data-select-field="depotFilter" style="flex:1;font-size:12px;padding:6px 6px;border:1px solid ${theme.border};border-radius:6px;background:${theme.inputBg};color:${theme.textSecondary}">${depotOptions}</select>
+            <select data-select-field="tagFilter" style="flex:1;font-size:12px;padding:6px 6px;border:1px solid ${theme.border};border-radius:6px;background:${theme.inputBg};color:${theme.textSecondary}">${tagOptions}</select>
+          </div>
+          <input id="field-depotPath" data-field="depotPath" value="${esc(state.depotPath)}" placeholder="//..." title="Depot path to search — press Enter to reload" style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid ${theme.border};border-radius:6px;font-size:11.5px;outline:none;background:${theme.inputBg};color:${theme.textSecondary};font-family:ui-monospace,monospace" />
+          ${state.depotError ? `<div style="font-size:11px;color:#dc2626;line-height:1.5">Could not list depots: ${esc(state.depotError)}</div>` : ''}
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:${theme.textSecondary};padding-top:2px">
+            <span>${filtered.length} changelist${filtered.length === 1 ? '' : 's'}</span>
+            <span style="display:flex;gap:12px">
+              <button data-action="refresh" style="border:none;background:none;color:${theme.accent};font-size:11px;cursor:pointer;font-weight:600;padding:0">refresh</button>
+              <button data-action="clear-selection" style="border:none;background:none;color:${theme.accent};font-size:11px;cursor:pointer;font-weight:600;padding:0">clear selection</button>
+            </span>
+          </div>
+        </div>
+
+        <div style="flex:1;overflow-y:auto;min-height:0">${renderListBody(filtered, theme)}</div>
+      </div>
+
+      <div style="flex:1;${narrow && !showPost ? 'display:none' : 'display:flex'};flex-direction:column;min-height:0;background:${theme.pageBg}">
+
+        <div style="display:flex;align-items:center;gap:${narrow ? '8px' : '14px'};padding:${narrow ? '10px 12px' : '14px 22px'};background:${theme.panelBg};border-bottom:1px solid ${theme.border};flex-shrink:0;flex-wrap:wrap">
+          <div style="font-size:13px;font-weight:600">
+            <span style="color:${theme.accent}">${selectedCount}</span> changelist${selectedCount === 1 ? '' : 's'} selected
+          </div>
+          <div style="flex:1"></div>
+          ${hasPost ? `<div style="display:flex;background:${theme.toggleTrackBg};border-radius:7px;padding:2px;gap:2px">
+            <button data-action="view-rendered" style="border:none;padding:6px 12px;font-size:12px;font-weight:600;border-radius:5px;cursor:pointer;background:${state.postView === 'rendered' ? '#fff' : 'transparent'};color:${state.postView === 'rendered' ? '#18181b' : '#71717a'}">Readable</button>
+            <button data-action="view-markdown" style="border:none;padding:6px 12px;font-size:12px;font-weight:600;border-radius:5px;cursor:pointer;background:${state.postView === 'markdown' ? '#fff' : 'transparent'};color:${state.postView === 'markdown' ? '#18181b' : '#71717a'}">Markdown</button>
+          </div>` : ''}
+          <button data-action="generate" ${generateDisabled ? 'disabled' : ''} style="border:none;padding:8px 16px;font-size:13px;font-weight:700;border-radius:7px;cursor:pointer;background:${generateDisabled ? '#a5a5ad' : '#18181b'};color:#fff;opacity:${generateDisabled ? 0.6 : 1}">${state.generating ? 'Generating&hellip;' : (narrow ? 'Generate' : 'Generate recommendations')}</button>
+        </div>
+
+        <div style="flex:1;overflow-y:auto;padding:${narrow ? '12px' : '22px'};min-height:0">${renderMainBody(theme)}</div>
+      </div>
+    </div>
+
+    ${renderConnectionModal(theme)}
+    ${renderAiModal(theme)}
+    ${renderDetailPanel(detail, theme)}
+  </div>`;
+
+  if (focusId) {
+    const restored = document.getElementById(focusId);
+    if (restored) {
+      restored.focus();
+      if (focusStart != null && restored.setSelectionRange) restored.setSelectionRange(focusStart, focusEnd);
+    }
+  }
+}
+
+render();
+const narrowQuery = window.matchMedia('(max-width: 760px)');
+const onWidthChange = (event) => setState({ narrow: event.matches });
+if (narrowQuery.addEventListener) narrowQuery.addEventListener('change', onWidthChange);
+else narrowQuery.addListener(onWidthChange); // Safari < 14
+
+loadAiSettings();
+loadStatus();
+</script>
+</body>
+</html>
