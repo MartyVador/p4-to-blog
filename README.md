@@ -52,6 +52,7 @@ Set these in `.env` (copy `.env.example`) or export them in your shell.
 | `P4_CHANGELIST_LIMIT` | Changelists pulled per refresh (default `25`, max `500`) |
 | `P4_BIN` | Path to the `p4` binary if it isn't on `PATH` |
 | `P4_DEBUG` | Set to `1` to log every `p4` command and result to the console (tickets redacted) |
+| `HISTORY_FILE` | Where the last 10 generated posts are kept (default `.history.json`) |
 | `HOST`, `PORT` | Listen address (default `127.0.0.1:4173`) |
 
 ## How it works
@@ -72,6 +73,9 @@ Set these in `.env` (copy `.env.example`) or export them in your shell.
   first request sends it and transparently retries without it if the model says no, remembering
   that per model. An endpoint that only supports the looser `json_object` response format is
   detected the same way and retried with the schema inlined into the prompt.
+- `server/history.js` — a 10-entry ring buffer of generated posts, mirrored to `.history.json`
+  so a restart doesn't lose drafts. Write and parse failures warn and carry on — history is a
+  convenience, never a reason for a generation to fail.
 - `server/env.js` — dependency-free `.env` loader. Double-quoted values may span lines and
   understand `\n` / `\"`; single-quoted values are literal. A line without `=` is reported
   rather than ignored, since that usually means an unescaped `"` ended a value early.
@@ -79,7 +83,8 @@ Set these in `.env` (copy `.env.example`) or export them in your shell.
   `ANTHROPIC_SYSTEM_PROMPT_FILE`.
 - `server/index.js` — `POST /api/connect`, `GET /api/status`, `GET /api/depots`,
   `GET /api/changelists`, `POST /api/diagnose`, `GET|POST /api/ai/settings`, `GET /api/ai/models`,
-  `POST /api/generate`, plus static hosting.
+  `GET /api/history`, `GET /api/history/:id`, `DELETE /api/history`, `POST /api/generate`, plus
+  static hosting.
 - The depot filter is populated from `p4 depots` — the depots that actually exist on your
   server — not from whatever the loaded changelists happen to touch. Picking one re-queries
   Perforce scoped to `//depot/...`. Unload and archive depots are omitted since they hold no
@@ -87,6 +92,17 @@ Set these in `.env` (copy `.env.example`) or export them in your shell.
   filter and the list falls back to the depots seen in the loaded changelists.
 - The depot path box under the filters is editable. A restrictive protections table can hide
   `//...` entirely while still granting read on a specific path — type it and press Enter.
+
+## Copying and history
+
+**Copy markdown** next to the view toggle puts the whole post on the clipboard. It uses the
+async clipboard API where available and falls back to a hidden textarea otherwise — that
+matters if you browse the tool from your phone over the LAN (`http://192.168.x.x:4173`), which
+is not a secure context and so has no `navigator.clipboard`.
+
+**History** keeps the last 10 generations: tap one to load it back into the post view, or copy
+it without opening it. Entries record the title, age, changelist count and model. They live in
+`.history.json` (gitignored) so they survive a restart; **Clear** empties the list.
 
 ## On a phone
 

@@ -8,6 +8,7 @@ const express = require('express');
 
 const p4 = require('./p4');
 const ai = require('./ai');
+const history = require('./history');
 const { generatePost, SYSTEM_PROMPT, SYSTEM_PROMPT_SOURCE } = require('./blog');
 
 const PORT = Number(process.env.PORT) || 4173;
@@ -132,6 +133,25 @@ app.post(
   })
 );
 
+app.get('/api/history', (req, res) => res.json({ entries: history.summaries(), limit: history.LIMIT }));
+
+app.get(
+  '/api/history/:id',
+  handle(async (req, res) => {
+    const entry = history.get(req.params.id);
+    if (!entry) {
+      res.status(404).json({ error: 'That history entry is gone.' });
+      return;
+    }
+    res.json(entry);
+  })
+);
+
+app.delete('/api/history', (req, res) => {
+  history.clear();
+  res.json({ entries: [], limit: history.LIMIT });
+});
+
 app.get('/api/ai/settings', (req, res) => res.json(publicAiSettings()));
 
 app.post(
@@ -220,7 +240,14 @@ app.post(
     }
     const changelists = await Promise.all(ids.map((id) => p4.describeChange(connection, id)));
     changelists.sort((a, b) => b.time - a.time);
-    res.json(await generatePost(changelists, aiSettings));
+
+    const post = await generatePost(changelists, aiSettings);
+    history.add(post, {
+      changelists: changelists.map((cl) => cl.cl),
+      provider: aiSettings.provider,
+      model: aiSettings.model,
+    });
+    res.json(post);
   })
 );
 
@@ -237,6 +264,7 @@ app.listen(PORT, HOST, () => {
       : `AI: ${aiSettings.provider} — no API key set; add one in AI settings or .env`
   );
   console.log(`System prompt: ${SYSTEM_PROMPT_SOURCE}`);
+  console.log(`History: last ${history.LIMIT} posts in ${history.FILE}`);
   if (connection.port && connection.user) {
     console.log(`Pre-filled from environment: ${connection.user}@${connection.port}`);
   }

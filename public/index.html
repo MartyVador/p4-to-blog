@@ -67,6 +67,11 @@ const state = {
   // become tabs and only one is shown at a time.
   narrow: window.matchMedia('(max-width: 760px)').matches,
   mobileTab: 'list',
+  copied: '',
+  historyModalOpen: false,
+  historyEntries: [],
+  historyError: '',
+  historyLoading: false,
   depotPath: '//...',
   diagnostics: [],
   diagnosing: false,
@@ -153,6 +158,88 @@ async function loadChangelists() {
     setState({ changelists, loading: false });
   } catch (err) {
     setState({ changelists: [], loading: false, loadError: err.message });
+  }
+}
+
+/* ----------------------------------------------------- copy & history */
+
+// navigator.clipboard only exists in a secure context. Serving on localhost
+// qualifies, but browsing the same server from a phone over the LAN
+// (http://192.168.x.x:4173) does not — hence the execCommand fallback.
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      /* fall through to the legacy path */
+    }
+  }
+  const scratch = document.createElement('textarea');
+  scratch.value = text;
+  scratch.setAttribute('readonly', '');
+  scratch.style.position = 'fixed';
+  scratch.style.top = '-1000px';
+  document.body.appendChild(scratch);
+  scratch.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(scratch);
+  return ok;
+}
+
+let copiedTimer = null;
+async function copyMarkdown(markdown, tag) {
+  if (!markdown) return;
+  const ok = await copyText(markdown);
+  setState({ copied: ok ? tag : `${tag}:failed` });
+  clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => setState({ copied: '' }), 2000);
+}
+
+async function loadHistory() {
+  setState({ historyLoading: true, historyError: '' });
+  try {
+    const { entries } = await api('/api/history');
+    setState({ historyEntries: entries, historyLoading: false });
+  } catch (err) {
+    setState({ historyLoading: false, historyError: err.message });
+  }
+}
+
+async function openHistoryEntry(id) {
+  try {
+    const entry = await api(`/api/history/${encodeURIComponent(id)}`);
+    setState({
+      ...entry.post,
+      historyModalOpen: false,
+      generateError: '',
+      mobileTab: 'post',
+    });
+  } catch (err) {
+    setState({ historyError: err.message });
+  }
+}
+
+async function copyHistoryEntry(id) {
+  try {
+    const entry = await api(`/api/history/${encodeURIComponent(id)}`);
+    await copyMarkdown(entry.post.postMarkdown, `history:${id}`);
+  } catch (err) {
+    setState({ historyError: err.message });
+  }
+}
+
+async function clearHistory() {
+  try {
+    await api('/api/history', { method: 'DELETE' });
+    setState({ historyEntries: [] });
+  } catch (err) {
+    setState({ historyError: err.message });
   }
 }
 
@@ -312,6 +399,15 @@ const actions = {
   'close-ai': () => setState({ aiModalOpen: false }),
   'tab-list': () => setState({ mobileTab: 'list' }),
   'tab-post': () => setState({ mobileTab: 'post' }),
+  'copy-post': () => copyMarkdown(state.postMarkdown, 'post'),
+  'open-history': () => {
+    setState({ historyModalOpen: true, historyError: '' });
+    loadHistory();
+  },
+  'close-history': () => setState({ historyModalOpen: false }),
+  'clear-history': clearHistory,
+  'history-open': (el) => openHistoryEntry(el.dataset.id),
+  'history-copy': (el) => copyHistoryEntry(el.dataset.id),
   'load-models': loadAiModels,
   'save-ai': saveAiSettings,
   'reset-prompt': () => setState({
@@ -569,6 +665,55 @@ function renderConnectionModal(theme) {
   </div>`;
 }
 
+function relativeTime(iso) {
+  const seconds = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (!Number.isFinite(seconds)) return '';
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} h ago`;
+  if (seconds < 172800) return 'yesterday';
+  return `${Math.floor(seconds / 86400)} days ago`;
+}
+
+function renderHistoryModal(theme) {
+  if (!state.historyModalOpen) return '';
+
+  const rows = state.historyEntries.map((entry) => {
+    const copied = state.copied === `history:${entry.id}`;
+    return `
+    <div style="display:flex;align-items:flex-start;gap:10px;padding:11px 0;border-bottom:1px solid ${theme.borderSoft}">
+      <div data-action="history-open" data-id="${esc(entry.id)}" style="flex:1;min-width:0;cursor:pointer">
+        <div style="font-size:13.5px;font-weight:600;color:${theme.textPrimary};line-height:1.4">${esc(entry.title)}</div>
+        <div style="font-size:11.5px;color:${theme.textMuted};margin-top:3px;font-family:ui-monospace,monospace;word-break:break-word">
+          ${esc(relativeTime(entry.createdAt))} &middot; ${entry.changelistCount} CL${entry.changelistCount === 1 ? '' : 's'}
+          ${entry.model ? ` &middot; ${esc(entry.model)}` : ''}
+        </div>
+      </div>
+      <button data-action="history-copy" data-id="${esc(entry.id)}" style="border:1px solid ${theme.border};background:transparent;color:${copied ? '#16a34a' : theme.textSecondary};font-size:11.5px;font-weight:600;padding:6px 10px;border-radius:6px;cursor:pointer;white-space:nowrap;flex-shrink:0">${copied ? '&#10003;' : 'Copy'}</button>
+    </div>`;
+  }).join('');
+
+  const body = state.historyLoading
+    ? `<div style="padding:24px 0;text-align:center;color:${theme.textMuted};font-size:13px">Loading&hellip;</div>`
+    : state.historyEntries.length
+      ? rows
+      : `<div style="padding:24px 0;text-align:center;color:${theme.textMuted};font-size:13px;line-height:1.6">Nothing generated yet.<br>Posts you generate are kept here.</div>`;
+
+  return `
+  <div data-action="close-history" style="position:fixed;inset:0;background:${theme.overlayBg};display:flex;align-items:center;justify-content:center;z-index:60;padding:12px;box-sizing:border-box">
+    <div data-action="stop" style="width:520px;max-width:94vw;max-height:90vh;overflow-y:auto;box-sizing:border-box;background:${theme.panelBg};color:${theme.textPrimary};border-radius:12px;padding:${state.narrow ? '16px' : '24px'};box-shadow:0 12px 40px rgba(0,0,0,0.3)">
+      <div style="font-size:15px;font-weight:700;margin-bottom:4px">Recent posts</div>
+      <div style="font-size:12px;color:${theme.textSecondary};margin-bottom:6px">The last 10 generations. Tap one to open it, or copy it straight to the clipboard.</div>
+      ${state.historyError ? `<div style="font-size:12px;color:#dc2626;margin:10px 0;line-height:1.5">${esc(state.historyError)}</div>` : ''}
+      ${body}
+      <div style="display:flex;gap:8px;margin-top:18px">
+        <button data-action="close-history" style="flex:1;border:1px solid ${theme.border};background:transparent;color:${theme.textSecondary};font-size:13px;font-weight:600;padding:9px;border-radius:7px;cursor:pointer">Close</button>
+        ${state.historyEntries.length ? `<button data-action="clear-history" style="border:1px solid ${theme.border};background:transparent;color:#dc2626;font-size:13px;font-weight:600;padding:9px 14px;border-radius:7px;cursor:pointer">Clear</button>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderAiModal(theme) {
   if (!state.aiModalOpen || !state.aiForm) return '';
   const form = state.aiForm;
@@ -794,10 +939,12 @@ function render() {
             <span style="color:${theme.accent}">${selectedCount}</span> changelist${selectedCount === 1 ? '' : 's'} selected
           </div>
           <div style="flex:1"></div>
+          <button data-action="open-history" style="border:1px solid ${theme.border};background:transparent;color:${theme.textSecondary};font-size:12px;font-weight:600;padding:7px 12px;border-radius:7px;cursor:pointer">History</button>
           ${hasPost ? `<div style="display:flex;background:${theme.toggleTrackBg};border-radius:7px;padding:2px;gap:2px">
             <button data-action="view-rendered" style="border:none;padding:6px 12px;font-size:12px;font-weight:600;border-radius:5px;cursor:pointer;background:${state.postView === 'rendered' ? '#fff' : 'transparent'};color:${state.postView === 'rendered' ? '#18181b' : '#71717a'}">Readable</button>
             <button data-action="view-markdown" style="border:none;padding:6px 12px;font-size:12px;font-weight:600;border-radius:5px;cursor:pointer;background:${state.postView === 'markdown' ? '#fff' : 'transparent'};color:${state.postView === 'markdown' ? '#18181b' : '#71717a'}">Markdown</button>
           </div>` : ''}
+          ${hasPost ? `<button data-action="copy-post" style="border:1px solid ${theme.border};background:transparent;color:${state.copied === 'post' ? '#16a34a' : theme.textSecondary};font-size:12px;font-weight:600;padding:7px 12px;border-radius:7px;cursor:pointer;white-space:nowrap">${state.copied === 'post' ? '&#10003; Copied' : state.copied === 'post:failed' ? 'Copy failed' : (narrow ? 'Copy' : 'Copy markdown')}</button>` : ''}
           <button data-action="generate" ${generateDisabled ? 'disabled' : ''} style="border:none;padding:8px 16px;font-size:13px;font-weight:700;border-radius:7px;cursor:pointer;background:${generateDisabled ? '#a5a5ad' : '#18181b'};color:#fff;opacity:${generateDisabled ? 0.6 : 1}">${state.generating ? 'Generating&hellip;' : (narrow ? 'Generate' : 'Generate recommendations')}</button>
         </div>
 
@@ -807,6 +954,7 @@ function render() {
 
     ${renderConnectionModal(theme)}
     ${renderAiModal(theme)}
+    ${renderHistoryModal(theme)}
     ${renderDetailPanel(detail, theme)}
   </div>`;
 
